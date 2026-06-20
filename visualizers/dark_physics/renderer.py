@@ -11,8 +11,8 @@ from __future__ import annotations
 import time
 
 import numpy as np
-from PyQt6.QtCore import QPoint, QRectF, Qt
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen
 
 from ..base import BaseVisualizer
 from .particles import ParticleSystem
@@ -41,6 +41,8 @@ class DarkPhysicsVisualizer(BaseVisualizer):
         super().__init__(num_bands, parent)
         self.physics = BarPhysics(num_bands)
         self.particles = ParticleSystem()
+        self._rings: list[list[float]] = []  # [x, y, radius, life, max_life, r,g,b]
+        self._flashes: list[list[float]] = []  # [x, y, life] bright shatter core
         self._last_t = time.perf_counter()
         self._last_drag: QPoint | None = None
         self._beat_flash = 0.0
@@ -54,6 +56,17 @@ class DarkPhysicsVisualizer(BaseVisualizer):
         heights = frame.bands
         self.physics.step(heights, dt)
         self.particles.update(dt, self.height_px())
+
+        # Expand and fade shockwave rings.
+        for r in self._rings:
+            r[2] += 520.0 * dt   # radius grows
+            r[3] -= dt           # life ticks down
+        self._rings = [r for r in self._rings if r[3] > 0]
+
+        # Fade the bright initial flash of each shatter.
+        for f in self._flashes:
+            f[2] -= dt * 2.2
+        self._flashes = [f for f in self._flashes if f[2] > 0]
 
         if frame.beat:
             self._beat_flash = 1.0
@@ -110,23 +123,76 @@ class DarkPhysicsVisualizer(BaseVisualizer):
             py = base_y - float(peaks[i]) * base_y
             painter.fillRect(QRectF(x, py, bar_w, 2.0), QColor(255, 255, 255, 200))
 
+        self._draw_rings(painter)
         self._draw_particles(painter)
 
         if self._beat_flash > 0:
             a = int(40 * self._beat_flash)
             painter.fillRect(0, 0, w, h, QColor(255, 255, 255, a))
 
+    def _draw_rings(self, painter: QPainter) -> None:
+        """Expanding shockwave rings, drawn additively for a neon glow."""
+        if not self._rings:
+            return
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        for x, y, radius, life, max_life, r, g, b in self._rings:
+            frac = max(0.0, life / max_life)
+            for ring_i, (rad_mul, width, alpha_mul) in enumerate(
+                ((1.0, 3.0, 1.0), (0.8, 6.0, 0.4))
+            ):
+                a = int(200 * frac * alpha_mul)
+                pen = QPen(QColor(int(r), int(g), int(b), a))
+                pen.setWidthF(width)
+                painter.setPen(pen)
+                rad = radius * rad_mul
+                painter.drawEllipse(QRectF(x - rad, y - rad, rad * 2, rad * 2))
+        painter.restore()
+
     def _draw_particles(self, painter: QPainter) -> None:
         ps = self.particles
-        mask = ps.active_mask()
-        idxs = np.nonzero(mask)[0]
+        idxs = np.nonzero(ps.active_mask())[0]
+        if idxs.size == 0 and not self._flashes:
+            return
+
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        # Bright core flash at each fresh shatter point.
+        for x, y, life in self._flashes:
+            a = int(220 * min(1.0, life))
+            rad = 18 + (1.0 - min(1.0, life)) * 26
+            painter.setBrush(QColor(255, 255, 255, a))
+            painter.drawEllipse(QRectF(x - rad, y - rad, rad * 2, rad * 2))
+
         for i in idxs:
-            life_frac = ps.life[i] / ps.max_life[i]
-            r, g, b = ps.color[i]
+            life_frac = float(ps.life[i] / ps.max_life[i])
+            r, g, b = (int(c) for c in ps.color[i])
+            s = float(ps.size[i]) * (0.4 + 0.6 * life_frac)
+            px, py = float(ps.pos[i, 0]), float(ps.pos[i, 1])
+
+            # Motion streak: a faint line trailing along velocity.
+            vx, vy = float(ps.vel[i, 0]), float(ps.vel[i, 1])
+            tlen = min(0.05, 14.0 / (abs(vx) + abs(vy) + 1.0))
+            trail_pen = QPen(QColor(r, g, b, int(70 * life_frac)))
+            trail_pen.setWidthF(max(1.0, s * 0.6))
+            painter.setPen(trail_pen)
+            painter.drawLine(
+                QPointF(px, py), QPointF(px - vx * tlen, py - vy * tlen)
+            )
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor(int(r), int(g), int(b), int(255 * life_frac)))
-            s = float(ps.size[i])
-            painter.drawEllipse(QRectF(ps.pos[i, 0], ps.pos[i, 1], s, s))
+
+            # Soft glow halo.
+            painter.setBrush(QColor(r, g, b, int(55 * life_frac)))
+            gr = s * 2.6
+            painter.drawEllipse(QRectF(px - gr, py - gr, gr * 2, gr * 2))
+            # Bright core.
+            painter.setBrush(QColor(r, g, b, int(235 * life_frac)))
+            painter.drawEllipse(QRectF(px - s / 2, py - s / 2, s, s))
+
+        painter.restore()
 
     # --- interactions ------------------------------------------------------
     def on_press(self, button, pos: QPoint) -> None:
@@ -161,5 +227,9 @@ class DarkPhysicsVisualizer(BaseVisualizer):
         bh = float(self.physics.height[idx]) * self.height_px()
         cy = self.height_px() - bh
         color = _neon_for(idx / max(1, self.num_bands - 1))
-        self.particles.emit(cx, cy, count=24, color=color, speed=360.0)
+
+        # A denser, faster burst plus a bright core and an expanding shockwave.
+        self.particles.emit(cx, cy, count=70, color=color, speed=440.0)
+        self._flashes.append([cx, cy, 1.0])
+        self._rings.append([cx, cy, 6.0, 0.55, 0.55, *color])
         self.physics.shatter_bar(idx)

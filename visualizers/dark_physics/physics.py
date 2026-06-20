@@ -18,7 +18,7 @@ import numpy as np
 GRAVITY = 2.2          # in normalized-height units per second^2
 BOUNCE = 0.55
 FREEZE_SECONDS = 3.0
-SHATTER_REGROW = 1.8   # how fast a shattered bar returns to live tracking
+SHATTER_REGROW = 0.4   # how fast a shattered bar returns: ~2.5s back to full
 
 
 class BarPhysics:

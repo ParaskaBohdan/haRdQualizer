@@ -1,20 +1,30 @@
-"""Alt / Gothic visualizer — goth-girl silhouettes over a purple flame spectrum.
+"""Alt / Gothic visualizer — goth-girl silhouettes over a smooth purple flame.
 
 Characters are drawn procedurally (silhouettes) for now; real sprite assets can
-drop into ``assets/`` later and replace ``_draw_character``. Poses:
+drop into ``assets/`` later and replace ``_draw_character``. Each character has
+a *depth*: ``back`` characters are smaller and drawn behind the spectrum, ``front``
+characters are larger and drawn in front, giving a layered stage look.
+
+The spectrum is a single smooth, connected flame (a filled spline, not separate
+bars) that glows and pulses red on bass. Poses:
   idle -> sway -> dance -> hands_up (on drop) -> horns (left-click cycles).
 
-Backdrop: moon + a mirrored purple "flame" spectrum that pulses red on bass.
-Particles: bats drifting across, rose petals falling.
+Particles: bats drifting across, rose petals falling on beats.
 """
 from __future__ import annotations
 
 import time
 
 import numpy as np
-from PyQt6.QtCore import QPoint, QRectF, Qt
-from PyQt6.QtGui import QColor, QPainter, QPolygonF
-from PyQt6.QtCore import QPointF
+from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt
+from PyQt6.QtGui import (
+    QColor,
+    QLinearGradient,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPolygonF,
+)
 
 from ..base import BaseVisualizer
 
@@ -26,10 +36,20 @@ class AltGothicVisualizer(BaseVisualizer):
 
     def __init__(self, num_bands: int, parent=None) -> None:
         super().__init__(num_bands, parent)
-        # Three characters at fixed horizontal anchors (fractions of width).
-        self._anchors = [0.25, 0.5, 0.75]
-        self._poses = ["idle", "sway", "idle"]
-        self._pose_timer = [0.0, 0.0, 0.0]
+        # Stage of characters: smaller "back" ones sit behind the flame,
+        # larger "front" ones stand before it. (anchor_x, depth, scale, feet_y)
+        self._chars = [
+            {"x": 0.50, "depth": "back", "scale": 0.20, "feet": 0.80,
+             "pose": "idle", "timer": 0.0},
+            {"x": 0.14, "depth": "back", "scale": 0.18, "feet": 0.82,
+             "pose": "sway", "timer": 0.0},
+            {"x": 0.86, "depth": "back", "scale": 0.18, "feet": 0.82,
+             "pose": "idle", "timer": 0.0},
+            {"x": 0.32, "depth": "front", "scale": 0.30, "feet": 0.99,
+             "pose": "sway", "timer": 0.0},
+            {"x": 0.68, "depth": "front", "scale": 0.30, "feet": 0.99,
+             "pose": "idle", "timer": 0.0},
+        ]
         self._bass_pulse = 0.0
         self._bats: list[list[float]] = []   # [x, y, vx, phase]
         self._petals: list[list[float]] = []  # [x, y, vy, drift]
@@ -44,21 +64,21 @@ class AltGothicVisualizer(BaseVisualizer):
         self._bass_pulse += (bass - self._bass_pulse) * min(1.0, dt * 6.0)
 
         # Loudness drives default pose energy.
-        for i in range(len(self._poses)):
-            self._pose_timer[i] = max(0.0, self._pose_timer[i] - dt)
-            if self._pose_timer[i] == 0.0:  # return to audio-driven pose
-                self._poses[i] = "dance" if frame.level > 0.4 else (
+        for c in self._chars:
+            c["timer"] = max(0.0, c["timer"] - dt)
+            if c["timer"] == 0.0:  # return to audio-driven pose
+                c["pose"] = "dance" if frame.level > 0.4 else (
                     "sway" if frame.level > 0.15 else "idle"
                 )
         if frame.drop:
-            for i in range(len(self._poses)):
-                self._poses[i] = "hands_up"
-                self._pose_timer[i] = 1.2
+            for c in self._chars:
+                c["pose"] = "hands_up"
+                c["timer"] = 1.2
 
         # Spawn the occasional bat.
         if np.random.random() < 0.02:
             self._bats.append([
-                -20.0, np.random.uniform(0.1, 0.5) * self.height(),
+                -20.0, np.random.uniform(0.08, 0.45) * self.height(),
                 np.random.uniform(60, 130), np.random.uniform(0, 6.28),
             ])
         for b in self._bats:
@@ -81,8 +101,10 @@ class AltGothicVisualizer(BaseVisualizer):
         w, h = self.width(), self.height()
         # Night gradient, pulsing toward red-purple on bass.
         pulse = self._bass_pulse
-        top = QColor(int(20 + 40 * pulse), 5, int(25 + 20 * pulse))
-        painter.fillRect(0, 0, w, h, top)
+        sky = QLinearGradient(0, 0, 0, h)
+        sky.setColorAt(0.0, QColor(int(22 + 45 * pulse), 6, int(30 + 24 * pulse)))
+        sky.setColorAt(1.0, QColor(6, 3, 10))
+        painter.fillRect(0, 0, w, h, sky)
         if self.frame is None:
             return
 
@@ -91,36 +113,84 @@ class AltGothicVisualizer(BaseVisualizer):
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawEllipse(QRectF(w * 0.8, h * 0.12, 70, 70))
 
+        # Back characters first, so the flame overlaps them.
+        for c in self._chars:
+            if c["depth"] == "back":
+                self._draw_character(painter, c)
+
         self._draw_flame_spectrum(painter)
 
         for petal in self._petals:
             painter.setBrush(QColor(180, 40, 80, 200))
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.drawEllipse(QRectF(petal[0], petal[1], 6, 9))
 
-        for i, ax in enumerate(self._anchors):
-            self._draw_character(painter, ax * w, h * 0.95, self._poses[i])
+        # Front characters in front of the flame.
+        for c in self._chars:
+            if c["depth"] == "front":
+                self._draw_character(painter, c)
 
         for bat in self._bats:
             self._draw_bat(painter, bat[0], bat[1], bat[3])
 
     def _draw_flame_spectrum(self, painter: QPainter) -> None:
+        """A single smooth, connected flame built from a spline through bands."""
         w, h = self.width(), self.height()
-        base_y = h * 0.78
-        slot = w / self.num_bands
+        bands = self.frame.bands
+        n = self.num_bands
+        base_y = h * 0.82
+        span = base_y * 0.62
         pulse = self._bass_pulse
-        for i in range(self.num_bands):
-            val = float(self.frame.bands[i])
-            bh = val * base_y * 0.7
-            cx = (i + 0.5) * slot
-            r = int(120 + 120 * pulse)
-            color = QColor(r, 30, 160, 130)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawRect(QRectF(cx - slot * 0.3, base_y - bh, slot * 0.6, bh))
 
-    def _draw_character(self, painter: QPainter, x: float, feet_y: float, pose: str) -> None:
+        xs = np.linspace(0, w, n)
+        ys = base_y - bands * span
+
+        # Smooth top edge using midpoint quadratic segments.
+        path = QPainterPath()
+        path.moveTo(0.0, base_y)
+        path.lineTo(float(xs[0]), float(ys[0]))
+        for i in range(1, n):
+            mx = (xs[i - 1] + xs[i]) / 2.0
+            my = (ys[i - 1] + ys[i]) / 2.0
+            path.quadTo(float(xs[i - 1]), float(ys[i - 1]), float(mx), float(my))
+        path.lineTo(float(xs[-1]), float(ys[-1]))
+        path.lineTo(float(w), base_y)
+        path.closeSubpath()
+
+        # Filled body with a purple->red vertical gradient.
+        grad = QLinearGradient(0, base_y - span, 0, base_y)
+        r = int(150 + 90 * pulse)
+        grad.setColorAt(0.0, QColor(r, 30, 170, 210))
+        grad.setColorAt(0.6, QColor(110, 20, 150, 170))
+        grad.setColorAt(1.0, QColor(40, 8, 70, 40))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(grad)
+        painter.drawPath(path)
+
+        # Glowing top edge, drawn additively.
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        edge = QPainterPath()
+        edge.moveTo(float(xs[0]), float(ys[0]))
+        for i in range(1, n):
+            mx = (xs[i - 1] + xs[i]) / 2.0
+            my = (ys[i - 1] + ys[i]) / 2.0
+            edge.quadTo(float(xs[i - 1]), float(ys[i - 1]), float(mx), float(my))
+        edge.lineTo(float(xs[-1]), float(ys[-1]))
+        for width, alpha in ((6.0, 60), (2.5, 150)):
+            pen = QPen(QColor(220, 90, 220, alpha))
+            pen.setWidthF(width)
+            painter.setPen(pen)
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(edge)
+        painter.restore()
+
+    def _draw_character(self, painter: QPainter, c: dict) -> None:
         """Stylized goth-girl silhouette with a few pose variations."""
-        body_h = self.height() * 0.42
+        x = c["x"] * self.width()
+        feet_y = c["feet"] * self.height()
+        pose = c["pose"]
+        body_h = self.height() * c["scale"]
         head_r = body_h * 0.13
         hip_y = feet_y - body_h * 0.45
         shoulder_y = feet_y - body_h * 0.78
@@ -176,11 +246,11 @@ class AltGothicVisualizer(BaseVisualizer):
 
     # --- interactions ------------------------------------------------------
     def on_press(self, button, pos: QPoint) -> None:
-        # Pick the nearest character.
-        x = pos.x() / max(1, self.width())
-        i = int(np.argmin([abs(a - x) for a in self._anchors]))
+        # Pick the nearest character by horizontal distance.
+        xf = pos.x() / max(1, self.width())
+        i = int(np.argmin([abs(c["x"] - xf) for c in self._chars]))
         if button == Qt.MouseButton.LeftButton:
-            cur = self._poses[i]
+            cur = self._chars[i]["pose"]
             nxt = POSES[(POSES.index(cur) + 1) % len(POSES)] if cur in POSES else "dance"
-            self._poses[i] = nxt
-            self._pose_timer[i] = 2.0
+            self._chars[i]["pose"] = nxt
+            self._chars[i]["timer"] = 2.0
