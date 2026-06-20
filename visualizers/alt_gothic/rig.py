@@ -17,6 +17,7 @@ swings the arm outward/up, ~165 raises it overhead.
 from __future__ import annotations
 
 import math
+import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,17 +47,19 @@ class CharacterRig:
     depth: str = "front"          # "back" | "front"
     name: str = "goth_a"
     hair_hue: int = 300           # base hair tint (HSV degrees); art overrides
+    flip: bool = False            # mirror horizontally (variety for reused art)
 
     # --- runtime animation state (not set by caller) ---
     pose: str = "idle"
     pose_timer: float = 0.0
-    _sway_phase: float = field(default_factory=lambda: 0.0)
+    _sway_phase: float = field(default_factory=lambda: random.uniform(0.0, 6.28))
     _breathe: float = 0.0
     _hair_angle: float = 0.0
     _hair_vel: float = 0.0
     _arm_l: float = 14.0
     _arm_r: float = -14.0
     _head_bob: float = 0.0        # downward px-ish, eased back
+    _beat_pulse: float = 0.0      # 0..1, bumps on each beat, eased back
     _jump: float = 0.0            # upward offset
     _jump_vel: float = 0.0
     _pixmaps: dict = field(default_factory=dict)        # layered art (option B)
@@ -142,10 +145,12 @@ class CharacterRig:
         self._hair_angle += self._hair_vel * dt
         self._hair_angle = max(-0.5, min(0.5, self._hair_angle))
 
-        # Head bob: a downward nudge on each beat, eased back.
+        # Head bob + a little body pulse on each beat, eased back.
         if beat:
             self._head_bob = min(1.0, self._head_bob + 0.6)
+            self._beat_pulse = min(1.0, self._beat_pulse + 0.5 + bass)
         self._head_bob = max(0.0, self._head_bob - dt * 3.0)
+        self._beat_pulse = max(0.0, self._beat_pulse - dt * 4.0)
 
         # Jump on the drop: ballistic hop.
         if drop:
@@ -203,9 +208,11 @@ class CharacterRig:
         painter.save()
         painter.translate(anchor_x, feet_y)
         painter.rotate(math.sin(self._sway_phase) * 1.6)        # gentle sway
-        breathe = 1.0 + self._breathe * 0.01                    # subtle breathing
+        # Subtle breathing + a springy pulse on each beat.
+        breathe = 1.0 + self._breathe * 0.01 + self._beat_pulse * 0.04
         bob = -self._head_bob * body_h * 0.02                   # tiny bob on beat
-        painter.scale(scale * breathe, scale * breathe)
+        sx = -1.0 if self.flip else 1.0                         # mirror for variety
+        painter.scale(sx * scale * breathe, scale * breathe)
         # Draw so the image's bottom-centre sits at (0,0) i.e. the feet.
         painter.drawPixmap(
             QRectF(-pm.width() / 2, -pm.height() + bob / scale, pm.width(), pm.height()),

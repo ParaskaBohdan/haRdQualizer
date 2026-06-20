@@ -39,12 +39,15 @@ class AltGothicVisualizer(BaseVisualizer):
     def __init__(self, num_bands: int, parent=None) -> None:
         super().__init__(num_bands, parent)
         # Stage: smaller "back" rigs behind the flame, larger "front" rigs ahead.
+        # Each character appears once front and once back on opposite sides, one
+        # of them mirrored, so the two real-art assets read as four distinct girls.
         self._rigs = [
-            CharacterRig(0.50, 0.80, 0.20, depth="back", name="goth_b", hair_hue=280),
-            CharacterRig(0.14, 0.82, 0.18, depth="back", name="goth_c", hair_hue=320),
-            CharacterRig(0.86, 0.82, 0.18, depth="back", name="goth_c", hair_hue=200),
-            CharacterRig(0.32, 0.99, 0.30, depth="front", name="goth_a", hair_hue=300),
-            CharacterRig(0.68, 0.99, 0.30, depth="front", name="goth_a", hair_hue=260),
+            CharacterRig(0.13, 0.84, 0.17, depth="back", name="goth_c", hair_hue=320),
+            CharacterRig(0.87, 0.84, 0.17, depth="back", name="goth_a", hair_hue=200,
+                         flip=True),
+            CharacterRig(0.30, 0.99, 0.30, depth="front", name="goth_a", hair_hue=300),
+            CharacterRig(0.70, 0.99, 0.30, depth="front", name="goth_c", hair_hue=260,
+                         flip=True),
         ]
         for rig in self._rigs:
             rig.load_assets(_ASSET_DIR)
