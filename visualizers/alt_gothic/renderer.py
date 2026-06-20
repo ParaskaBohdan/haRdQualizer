@@ -1,14 +1,14 @@
 """Alt / Gothic visualizer — layered goth-girl rigs over a smooth purple flame.
 
-Characters are :class:`CharacterRig` instances (see ``rig.py``): layered
-paper-dolls that articulate to the music. ``back`` characters are smaller and
-drawn behind the spectrum; ``front`` ones stand before it. Real AI-generated art
-drops into ``assets/characters/<name>/`` as per-layer PNGs; until then a
-procedural silhouette stands in.
+Characters are :class:`CharacterRig` instances (see ``rig.py``): paper-dolls that
+articulate to the music. ``back`` characters are smaller and drawn behind the
+spectrum; ``front`` ones stand before it. Real art drops into
+``assets/characters/<name>/``; until then a procedural silhouette stands in.
 
-The spectrum is a single smooth, connected flame (a filled spline, not separate
-bars) that glows and pulses red on bass. Particles: bats drifting across, rose
-petals falling on beats.
+Scene atmosphere: a glowing moon, a twinkling star field, a gothic city skyline
+silhouette and a low fog band. The spectrum is a single smooth connected flame
+that pulses red on bass and flares on the drop, while the girls rim-glow with the
+bass and hop on the drop. Particles: bats drifting across, rose petals on beats.
 """
 from __future__ import annotations
 
@@ -24,10 +24,11 @@ from PyQt6.QtGui import (
     QPainterPath,
     QPen,
     QPolygonF,
+    QRadialGradient,
 )
 
 from ..base import BaseVisualizer
-from .rig import POSE_ARMS, CharacterRig
+from .rig import CharacterRig
 
 _POSE_CYCLE = ("idle", "sway", "dance", "hands_up", "horns")
 _ASSET_DIR = Path(__file__).resolve().parent.parent.parent / "assets" / "characters"
@@ -51,19 +52,56 @@ class AltGothicVisualizer(BaseVisualizer):
         ]
         for rig in self._rigs:
             rig.load_assets(_ASSET_DIR)
+        # A central back girl appears only once real goth_b art is dropped in.
+        center = CharacterRig(0.50, 0.86, 0.20, depth="back", name="goth_b", hair_hue=280)
+        if center.load_assets(_ASSET_DIR) and center.has_body_art:
+            self._rigs.insert(0, center)
 
         self._bass_pulse = 0.0
-        self._bats: list[list[float]] = []   # [x, y, vx, phase]
+        self._drop_flash = 0.0       # flame flare on the drop
+        self._screen_pulse = 0.0     # full-screen flash on the drop
+        self._t = 0.0                # time accumulator for twinkling
+        self._bats: list[list[float]] = []    # [x, y, vx, phase]
         self._petals: list[list[float]] = []  # [x, y, vy, drift]
+        self._stars = self._make_stars(70)
+        self._skyline = self._make_skyline()
         self._last_t = time.perf_counter()
 
+    # --- procedural scene props -------------------------------------------
+    @staticmethod
+    def _make_stars(n: int) -> list[tuple[float, float, float, float]]:
+        rng = np.random.default_rng(7)
+        return [(float(rng.uniform(0, 1)), float(rng.uniform(0, 0.55)),
+                 float(rng.uniform(0.6, 1.8)), float(rng.uniform(0, 6.28)))
+                for _ in range(n)]
+
+    @staticmethod
+    def _make_skyline() -> list[tuple[float, float, float, bool]]:
+        """List of (x_frac, width_frac, top_y_frac, has_spire) buildings."""
+        rng = np.random.default_rng(13)
+        out = []
+        x = -0.02
+        while x < 1.02:
+            wf = float(rng.uniform(0.04, 0.10))
+            top = float(rng.uniform(0.60, 0.80))
+            out.append((x, wf, top, bool(rng.random() < 0.35)))
+            x += wf * float(rng.uniform(0.9, 1.3))
+        return out
+
+    # --- per-frame update --------------------------------------------------
     def on_frame(self, frame) -> None:
         now = time.perf_counter()
         dt = now - self._last_t
         self._last_t = now
+        self._t += dt
 
         bass = float(frame.bands[: max(1, self.num_bands // 8)].mean())
         self._bass_pulse += (bass - self._bass_pulse) * min(1.0, dt * 6.0)
+        if frame.drop:
+            self._drop_flash = 1.0
+            self._screen_pulse = 1.0
+        self._drop_flash = max(0.0, self._drop_flash - dt * 1.6)
+        self._screen_pulse = max(0.0, self._screen_pulse - dt * 2.2)
 
         for rig in self._rigs:
             rig.update(dt, frame.level, frame.beat, frame.drop, bass)
@@ -90,6 +128,7 @@ class AltGothicVisualizer(BaseVisualizer):
             p[0] += np.sin(p[1] * 0.02) * p[3] * dt
         self._petals = [p for p in self._petals if p[1] < self.height() + 10]
 
+    # --- painting ----------------------------------------------------------
     def render(self, painter: QPainter) -> None:
         w, h = self.width(), self.height()
         pulse = self._bass_pulse
@@ -100,10 +139,7 @@ class AltGothicVisualizer(BaseVisualizer):
         if self.frame is None:
             return
 
-        # Moon.
-        painter.setBrush(QColor(230, 230, 245, 180))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawEllipse(QRectF(w * 0.8, h * 0.12, 70, 70))
+        self._draw_backdrop(painter, w, h)
 
         for rig in self._rigs:
             if rig.depth == "back":
@@ -123,14 +159,67 @@ class AltGothicVisualizer(BaseVisualizer):
         for bat in self._bats:
             self._draw_bat(painter, bat[0], bat[1], bat[3])
 
+        if self._screen_pulse > 0.0:
+            self._draw_screen_pulse(painter, w, h)
+
+    def _draw_backdrop(self, painter: QPainter, w: int, h: int) -> None:
+        """Moon + glow, twinkling stars, gothic skyline silhouette, fog."""
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        # Stars (drawn first, faint, twinkling).
+        for xf, yf, r, phase in self._stars:
+            tw = 0.55 + 0.45 * np.sin(self._t * 2.0 + phase)
+            painter.setBrush(QColor(220, 215, 240, int(150 * tw)))
+            painter.drawEllipse(QRectF(xf * w, yf * h, r, r))
+
+        # Moon with a soft halo, brightening slightly on bass.
+        mx, my, mr = w * 0.80, h * 0.13, 46.0
+        halo = QRadialGradient(mx, my, mr * 2.4)
+        halo.setColorAt(0.0, QColor(220, 220, 245, int(120 + 60 * self._bass_pulse)))
+        halo.setColorAt(1.0, QColor(220, 220, 245, 0))
+        painter.setBrush(halo)
+        painter.drawEllipse(QRectF(mx - mr * 2.4, my - mr * 2.4, mr * 4.8, mr * 4.8))
+        painter.setBrush(QColor(235, 235, 248))
+        painter.drawEllipse(QRectF(mx - mr, my - mr, mr * 2, mr * 2))
+        painter.setBrush(QColor(210, 210, 230, 90))  # a couple of craters
+        painter.drawEllipse(QRectF(mx - mr * 0.4, my - mr * 0.3, mr * 0.5, mr * 0.5))
+        painter.drawEllipse(QRectF(mx + mr * 0.1, my + mr * 0.2, mr * 0.35, mr * 0.35))
+
+        # Horizon glow so the black skyline reads against it.
+        horizon = h * 0.9
+        hg = QLinearGradient(0, h * 0.5, 0, horizon)
+        hg.setColorAt(0.0, QColor(50, 12, 70, 0))
+        hg.setColorAt(1.0, QColor(120, 45, 150, 95))
+        painter.fillRect(QRectF(0, h * 0.5, w, horizon - h * 0.5), hg)
+
+        # Gothic skyline silhouette along the horizon.
+        painter.setBrush(QColor(6, 3, 11))
+        for xf, wf, top, spire in self._skyline:
+            bx, bw, by = xf * w, wf * w, top * h
+            painter.drawRect(QRectF(bx, by, bw, horizon - by))
+            if spire:  # a pointed roof / cathedral spire
+                roof = QPolygonF([
+                    QPointF(bx, by), QPointF(bx + bw / 2, by - bw * 0.9),
+                    QPointF(bx + bw, by),
+                ])
+                painter.drawPolygon(roof)
+
+        # Low fog band blending skyline, flame base and ground.
+        fog = QLinearGradient(0, h * 0.66, 0, h)
+        fog.setColorAt(0.0, QColor(60, 25, 80, 0))
+        fog.setColorAt(0.6, QColor(70, 30, 95, 60))
+        fog.setColorAt(1.0, QColor(40, 15, 60, 110))
+        painter.fillRect(QRectF(0, h * 0.66, w, h * 0.34), fog)
+
     def _draw_flame_spectrum(self, painter: QPainter) -> None:
         """A single smooth, connected flame built from a spline through bands."""
         w, h = self.width(), self.height()
         bands = self.frame.bands
         n = self.num_bands
         base_y = h * 0.82
-        span = base_y * 0.62
-        pulse = self._bass_pulse
+        flare = 1.0 + self._drop_flash * 0.4
+        span = base_y * 0.62 * flare
+        pulse = min(1.0, self._bass_pulse + self._drop_flash * 0.5)
 
         xs = np.linspace(0, w, n)
         ys = base_y - bands * span
@@ -155,7 +244,7 @@ class AltGothicVisualizer(BaseVisualizer):
         painter.setBrush(grad)
         painter.drawPath(path)
 
-        # Glowing top edge, drawn additively.
+        # Glowing top edge, drawn additively; brighter on the drop.
         painter.save()
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
         edge = QPainterPath()
@@ -165,12 +254,25 @@ class AltGothicVisualizer(BaseVisualizer):
             my = (ys[i - 1] + ys[i]) / 2.0
             edge.quadTo(float(xs[i - 1]), float(ys[i - 1]), float(mx), float(my))
         edge.lineTo(float(xs[-1]), float(ys[-1]))
-        for width, alpha in ((6.0, 60), (2.5, 150)):
-            pen = QPen(QColor(220, 90, 220, alpha))
+        boost = int(80 * self._drop_flash)
+        for width, alpha in ((6.0, 60 + boost), (2.5, 150 + boost)):
+            pen = QPen(QColor(220, 90, 220, min(255, alpha)))
             pen.setWidthF(width)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawPath(edge)
+        painter.restore()
+
+    def _draw_screen_pulse(self, painter: QPainter, w: int, h: int) -> None:
+        """A brief purple vignette flash on the drop."""
+        p = self._screen_pulse
+        vig = QRadialGradient(w / 2, h / 2, max(w, h) * 0.75)
+        vig.setColorAt(0.0, QColor(150, 40, 200, 0))
+        vig.setColorAt(0.7, QColor(150, 40, 200, int(30 * p)))
+        vig.setColorAt(1.0, QColor(120, 20, 170, int(90 * p)))
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+        painter.fillRect(QRectF(0, 0, w, h), vig)
         painter.restore()
 
     def _draw_bat(self, painter: QPainter, x: float, y: float, phase: float) -> None:

@@ -60,10 +60,12 @@ class CharacterRig:
     _arm_r: float = -14.0
     _head_bob: float = 0.0        # downward px-ish, eased back
     _beat_pulse: float = 0.0      # 0..1, bumps on each beat, eased back
+    _bass: float = 0.0            # smoothed bass level, drives the rim glow
     _jump: float = 0.0            # upward offset
     _jump_vel: float = 0.0
     _pixmaps: dict = field(default_factory=dict)        # layered art (option B)
     _body_imgs: dict = field(default_factory=dict)      # whole-figure art per pose
+    _glow_cache: dict = field(default_factory=dict)     # tinted silhouettes for glow
 
     # --- asset loading -----------------------------------------------------
     def load_assets(self, base_dir: Path) -> int:
@@ -152,9 +154,12 @@ class CharacterRig:
         self._head_bob = max(0.0, self._head_bob - dt * 3.0)
         self._beat_pulse = max(0.0, self._beat_pulse - dt * 4.0)
 
-        # Jump on the drop: ballistic hop.
+        # Smoothed bass drives the rim glow.
+        self._bass += (bass - self._bass) * min(1.0, dt * 8.0)
+
+        # Jump on the drop: a bigger ballistic hop.
         if drop:
-            self._jump_vel = 1.0
+            self._jump_vel = 1.7
         self._jump_vel -= 3.0 * dt
         self._jump += self._jump_vel * dt
         if self._jump < 0.0:
@@ -165,7 +170,7 @@ class CharacterRig:
     def draw(self, painter: QPainter, w: int, h: int) -> None:
         body_h = h * self.scale
         anchor_x = self.x_frac * w + math.sin(self._sway_phase) * body_h * 0.04
-        feet_y = self.feet_frac * h - self._jump * body_h * 0.18
+        feet_y = self.feet_frac * h - self._jump * body_h * 0.28
 
         if self.has_body_art:
             self._draw_body_image(painter, anchor_x, feet_y, body_h)
@@ -213,12 +218,43 @@ class CharacterRig:
         bob = -self._head_bob * body_h * 0.02                   # tiny bob on beat
         sx = -1.0 if self.flip else 1.0                         # mirror for variety
         painter.scale(sx * scale * breathe, scale * breathe)
+        src = QRectF(pm.rect())
+        dst = QRectF(-pm.width() / 2, -pm.height() + bob / scale, pm.width(), pm.height())
+
+        # Rim glow: a purple-tinted silhouette, slightly enlarged behind the
+        # figure, brightening with the bass. Drawn additively so it haloes.
+        glow_i = min(1.0, self._bass * 1.7 + self._beat_pulse * 0.4)
+        if glow_i > 0.03:
+            glow = self._glow_pixmap(pm)
+            painter.save()
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Plus)
+            painter.setOpacity(glow_i * 0.7)
+            grow = pm.width() * 0.04
+            painter.drawPixmap(
+                QRectF(dst.x() - grow, dst.y() - grow,
+                       dst.width() + grow * 2, dst.height() + grow * 2),
+                glow, src,
+            )
+            painter.restore()
+
         # Draw so the image's bottom-centre sits at (0,0) i.e. the feet.
-        painter.drawPixmap(
-            QRectF(-pm.width() / 2, -pm.height() + bob / scale, pm.width(), pm.height()),
-            pm, QRectF(pm.rect()),
-        )
+        painter.drawPixmap(dst, pm, src)
         painter.restore()
+
+    def _glow_pixmap(self, pm: QPixmap) -> QPixmap:
+        """A purple-tinted copy of ``pm`` (same alpha), cached per source image."""
+        key = pm.cacheKey()
+        cached = self._glow_cache.get(key)
+        if cached is None:
+            cached = QPixmap(pm.size())
+            cached.fill(Qt.GlobalColor.transparent)
+            gp = QPainter(cached)
+            gp.drawPixmap(0, 0, pm)
+            gp.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceIn)
+            gp.fillRect(cached.rect(), QColor(185, 70, 235))
+            gp.end()
+            self._glow_cache[key] = cached
+        return cached
 
     def _apply_layer_transform(self, painter: QPainter, layer: str, geom: "_Geometry") -> None:
         """Translate to the layer pivot and rotate per animation state."""
