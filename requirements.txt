@@ -1,0 +1,14 @@
+# --- Core ---
+numpy>=1.24
+scipy>=1.10
+
+# --- UI / Visualization ---
+PyQt6>=6.5
+pyqtgraph>=0.13
+
+# --- Audio capture (WASAPI loopback on Windows) ---
+PyAudioWPatch>=0.2.12.6
+
+# --- Streaming integrations (Phase 7, optional) ---
+# spotipy>=2.23        # Spotify Web API
+# yt-dlp>=2024.1       # YouTube Music audio stream

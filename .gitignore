@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# App
+config.local.json
+settings.json
+*.log
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Secrets (Spotify/SoundCloud tokens)
+.env
+secrets.json
+.cache
