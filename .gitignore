@@ -25,6 +25,9 @@ config.local.json
 settings.json
 *.log
 
+# Generated character art bundles (download artifacts; extract PNGs in place)
+assets/characters/*.zip
+
 # OS
 Thumbs.db
 .DS_Store
