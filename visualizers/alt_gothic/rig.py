@@ -59,19 +59,40 @@ class CharacterRig:
     _head_bob: float = 0.0        # downward px-ish, eased back
     _jump: float = 0.0            # upward offset
     _jump_vel: float = 0.0
-    _pixmaps: dict = field(default_factory=dict)
+    _pixmaps: dict = field(default_factory=dict)        # layered art (option B)
+    _body_imgs: dict = field(default_factory=dict)      # whole-figure art per pose
 
     # --- asset loading -----------------------------------------------------
     def load_assets(self, base_dir: Path) -> int:
-        """Load ``<base_dir>/<name>/<layer>.png`` for any present layers.
+        """Load art for this character from ``<base_dir>/<name>/``.
 
-        Returns the number of layers found. Missing layers fall back to the
-        procedural silhouette, so partial art is fine.
+        Two modes are supported; whichever files are present win:
+
+        * **Whole-figure** (best for realistic art): ``body.png`` plus optional
+          per-pose images ``idle.png`` / ``hands_up.png`` / ``dance.png`` /
+          ``horns.png``. Drawn as one image with sway/breathe/jump motion, no
+          limb articulation (which looks uncanny on realistic art).
+        * **Layered** (best for stylized art): per-layer PNGs (hair_back, torso,
+          head, arm_l, arm_r, ...) that articulate independently.
+
+        Missing pieces fall back to the procedural silhouette. Returns the count
+        of images found.
         """
         char_dir = base_dir / self.name
         found = 0
         if not char_dir.is_dir():
             return 0
+
+        # Whole-figure images keyed by pose ("body" is the default fallback).
+        for pose in ("body", "idle", "sway", "dance", "hands_up", "horns"):
+            path = char_dir / f"{pose}.png"
+            if path.is_file():
+                pm = QPixmap(str(path))
+                if not pm.isNull():
+                    self._body_imgs[pose] = pm
+                    found += 1
+
+        # Layered art.
         for layer in LAYER_ORDER:
             path = char_dir / f"{layer}.png"
             if path.is_file():
@@ -80,6 +101,10 @@ class CharacterRig:
                     self._pixmaps[layer] = pm
                     found += 1
         return found
+
+    @property
+    def has_body_art(self) -> bool:
+        return bool(self._body_imgs)
 
     # --- pose control ------------------------------------------------------
     def set_pose(self, pose: str, hold: float = 2.0) -> None:
@@ -137,6 +162,10 @@ class CharacterRig:
         anchor_x = self.x_frac * w + math.sin(self._sway_phase) * body_h * 0.04
         feet_y = self.feet_frac * h - self._jump * body_h * 0.18
 
+        if self.has_body_art:
+            self._draw_body_image(painter, anchor_x, feet_y, body_h)
+            return
+
         geom = _Geometry(anchor_x, feet_y, body_h, self._breathe, self._head_bob)
 
         for layer in LAYER_ORDER:
@@ -150,6 +179,39 @@ class CharacterRig:
             else:
                 _draw_procedural(painter, layer, geom, self)
             painter.restore()
+
+    def _draw_body_image(self, painter: QPainter, anchor_x: float,
+                         feet_y: float, body_h: float) -> None:
+        """Draw a whole-figure image with sway/breathe/jump motion (realistic art)."""
+        pm = (self._body_imgs.get(self.pose)
+              or self._body_imgs.get("body")
+              or self._body_imgs.get("idle")
+              or next(iter(self._body_imgs.values())))
+
+        # Scale art so the figure stands ~2.8x the nominal body height.
+        target_h = body_h * 2.8
+        scale = target_h / max(1, pm.height())
+        tw, th = pm.width() * scale, pm.height() * scale
+
+        # Soft contact shadow under the feet.
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 90))
+        painter.drawEllipse(QRectF(anchor_x - tw * 0.22, feet_y - 6, tw * 0.44, 12))
+        painter.restore()
+
+        painter.save()
+        painter.translate(anchor_x, feet_y)
+        painter.rotate(math.sin(self._sway_phase) * 1.6)        # gentle sway
+        breathe = 1.0 + self._breathe * 0.01                    # subtle breathing
+        bob = -self._head_bob * body_h * 0.02                   # tiny bob on beat
+        painter.scale(scale * breathe, scale * breathe)
+        # Draw so the image's bottom-centre sits at (0,0) i.e. the feet.
+        painter.drawPixmap(
+            QRectF(-pm.width() / 2, -pm.height() + bob / scale, pm.width(), pm.height()),
+            pm, QRectF(pm.rect()),
+        )
+        painter.restore()
 
     def _apply_layer_transform(self, painter: QPainter, layer: str, geom: "_Geometry") -> None:
         """Translate to the layer pivot and rotate per animation state."""
