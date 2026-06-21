@@ -56,6 +56,10 @@ class AltGothicVisualizer(BaseVisualizer):
         center = CharacterRig(0.50, 0.86, 0.20, depth="back", name="goth_b", hair_hue=280)
         if center.load_assets(_ASSET_DIR) and center.has_body_art:
             self._rigs.insert(0, center)
+        # The realistic "hero" (goth_d) takes front-centre stage once she exists.
+        hero = CharacterRig(0.50, 0.99, 0.34, depth="front", name="goth_d", hair_hue=290)
+        if hero.load_assets(_ASSET_DIR) and hero.has_body_art:
+            self._rigs.append(hero)
 
         self._bass_pulse = 0.0
         self._drop_flash = 0.0       # flame flare on the drop
